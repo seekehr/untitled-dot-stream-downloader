@@ -4,6 +4,21 @@ import { Readable } from 'node:stream';
 import type { ReadableStream } from 'node:stream/web';
 import { spawn } from 'node:child_process';
 import ffmpeg from 'ffmpeg-static';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { basename } from 'node:path';
+
+export class HttpError extends Error {
+  status: number;
+  retryAfterMs: number;
+  stage: string;
+  constructor(status: number, retryAfter: string | null = null, stage = 'File download') {
+    super(`${stage} failed: HTTP ${status}`);
+    this.status = status;
+    this.stage = stage;
+    const seconds = Number(retryAfter);
+    this.retryAfterMs = retryAfter === null ? 0 : Math.max(0, Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter) - Date.now()) || 0;
+  }
+}
 
 export function safeName(name: string): string {
   const clean = name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').slice(0, 120).replace(/[. ]+$/g, '') || 'untitled';
@@ -26,18 +41,43 @@ export async function parallel<T>(items: T[], concurrency: number, run: (item: T
 }
 
 // A failed transfer never leaves a final filename containing partial audio.
-export async function download(url: string, destination: string): Promise<void> {
+export async function download(source: string | (() => Promise<{ url: string; headers?: Record<string, string> }>), destination: string,
+  options: { retries?: number; delayMs?: number; onRetry?: (waitMs: number, error: unknown) => void;
+    fetch?: (url: string, headers?: Record<string, string>) => Promise<Response> } = {}): Promise<void> {
   const temporary = `${destination}.part`;
-  let ownsTemporary = false;
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(30 * 60_000) });
-    if (!response.ok || !response.body) throw new Error(`Download failed: HTTP ${response.status}`);
-    const handle = await open(temporary, 'wx');
-    ownsTemporary = true;
-    await pipeline(Readable.fromWeb(response.body as unknown as ReadableStream), handle.createWriteStream());
-    await rename(temporary, destination);
-  } finally {
-    if (ownsTemporary) await rm(temporary, { force: true });
+  const retries = options.retries ?? 4;
+  for (let attempt = 0; ; attempt++) {
+    let ownsTemporary = false;
+    let response: Response | undefined;
+    try {
+      const { url, headers } = typeof source === 'string' ? { url: source, headers: undefined } : await source();
+      response = options.fetch ? await options.fetch(url, headers)
+        : await fetch(url, { headers, signal: AbortSignal.timeout(30 * 60_000) });
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new HttpError(response.status, response.headers.get('retry-after'));
+      }
+      if (!response.body) throw new Error('Download returned no data.');
+      const handle = await open(temporary, 'wx');
+      ownsTemporary = true;
+      await pipeline(Readable.fromWeb(response.body as unknown as ReadableStream), handle.createWriteStream());
+      await rename(temporary, destination);
+      return;
+    } catch (error) {
+      const retryable = error instanceof HttpError ? [403, 408, 425, 429].includes(error.status) || error.status >= 500
+        : error instanceof TypeError || ['TimeoutError', 'AbortError'].includes((error as Error).name)
+          || /^(ECONNRESET|ETIMEDOUT|EPIPE)$/.test((error as NodeJS.ErrnoException).code ?? '');
+      if (!retryable || attempt >= retries) throw error;
+      if (ownsTemporary) { await rm(temporary, { force: true }); ownsTemporary = false; }
+      const base = options.delayMs ?? 1000;
+      const wait = Math.min(60_000, Math.max(base * 2 ** attempt + Math.random() * base, error instanceof HttpError ? error.retryAfterMs : 0));
+      console.warn(`Retrying ${basename(destination)} (${attempt + 1}/${retries}) in ${(wait / 1000).toFixed(1)}s: ${(error as Error).message}`);
+      options.onRetry?.(wait, error);
+      await sleep(wait);
+    } finally {
+      await response?.body?.cancel().catch(() => {});
+      if (ownsTemporary) await rm(temporary, { force: true });
+    }
   }
 }
 

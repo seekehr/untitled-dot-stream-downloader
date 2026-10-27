@@ -1,10 +1,11 @@
 import { chromium, type Page } from 'playwright';
 import { readFile, mkdir, writeFile, access } from 'node:fs/promises';
-import { resolve, join, extname } from 'node:path';
+import { resolve, join, extname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
-import { download, safeName, storagePath, tag, parallel } from './download.ts';
+import { download, safeName, storagePath, tag, parallel, HttpError } from './download.ts';
+import { chromeFetch } from './browser.ts';
 
 type Track = {
   id: string; title?: string; artist_name?: string; audio_url?: string;
@@ -14,14 +15,13 @@ type Project = { title: string; artist_name?: string; artwork_url?: string };
 type ProjectData = { project: Project; tracks: Track[] };
 
 async function api<T>(page: Page, path: string): Promise<T> {
-  return await page.evaluate(async path => {
-    const response = await fetch(path);
-    if (!response.ok) throw new Error(`untitled API: HTTP ${response.status}. Retry with --login to sign in and accept the invite.`);
-    if (!response.headers.get('content-type')?.includes('application/json')) {
-      throw new Error('Sign in or finish the browser challenge, then retry.');
-    }
-    return response.json();
-  }, path) as T;
+  const response = await page.evaluate(async path => {
+    const result = await fetch(path, { cache: 'no-store' });
+    return { status: result.status, type: result.headers.get('content-type'), retryAfter: result.headers.get('retry-after'), text: await result.text() };
+  }, path);
+  if (response.status < 200 || response.status >= 300) throw new HttpError(response.status, response.retryAfter, 'untitled API');
+  if (!response.type?.includes('application/json')) throw new Error('Sign in or finish the browser challenge, then retry.');
+  return JSON.parse(response.text) as T;
 }
 
 async function signedUrl(page: Page, url: string): Promise<string> {
@@ -29,7 +29,7 @@ async function signedUrl(page: Page, url: string): Promise<string> {
   if (!location) return url;
   const { bucket, key } = location;
   const result = await api<{ url: string }>(page,
-    `/api/storage/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(key)}/signedUrl?durationInSeconds=3600&download=true`);
+    `/api/storage/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(key)}/signedUrl?durationInSeconds=3600&cacheBufferInSeconds=3600&download=true`);
   return result.url;
 }
 
@@ -73,6 +73,33 @@ async function main() {
     try {
       page = await context.newPage();
       const projectPage = page;
+      const userAgent = await page.evaluate(() => navigator.userAgent);
+      let cooldownUntil = 0;
+      const downloadAsset = (url: string, file: string) => {
+        let useChrome = extname(file).toLowerCase() === '.wav';
+        return download(async () => {
+          const wait = cooldownUntil - Date.now();
+          if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+          const signed = await signedUrl(projectPage, url);
+          const cookies = await context.cookies(signed);
+          return { url: signed, headers: {
+            'User-Agent': userAgent, Referer: 'https://untitled.stream/',
+            ...(cookies.length ? { Cookie: cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ') } : {}),
+          } };
+        }, file, {
+          fetch: (url, headers) => useChrome
+            ? chromeFetchSession(url)
+            : fetch(url, { headers, signal: AbortSignal.timeout(30 * 60_000) }),
+          onRetry: (wait, error) => {
+            if (error instanceof HttpError && error.status === 403 && error.stage === 'File download') {
+              useChrome = true;
+              console.log(`Retrying ${basename(file)} through your signed-in Chrome session.`);
+            }
+            if (error instanceof HttpError && [403, 429].includes(error.status)) cooldownUntil = Math.max(cooldownUntil, Date.now() + wait);
+          },
+        });
+      };
+      const chromeFetchSession = async (url: string) => chromeFetch(await context.newCDPSession(projectPage), url);
       if (inviteUrl) {
         await page.goto(inviteUrl.href, { waitUntil: 'domcontentloaded' });
         await input.question('Sign in and accept the invite in the browser. Press Enter here when ready. ');
@@ -107,7 +134,7 @@ async function main() {
           const extension = extname(new URL(url).pathname).slice(1).toLowerCase();
           if (!['jpg', 'jpeg', 'png', 'webp'].includes(extension)) throw new Error('Unrecognized artwork format.');
           const file = join(folder, `${name}.${extension}`);
-          await download(await signedUrl(projectPage, url), file);
+          await downloadAsset(url, file);
           return file;
         })();
         covers.set(url, pending);
@@ -128,10 +155,10 @@ async function main() {
           for (let suffix = 2; filenames.has(filename.toLowerCase()); suffix++) filename = `${title} (${suffix}).${extension}`;
           filenames.add(filename.toLowerCase());
           const file = join(folder, filename);
-          try { await access(file); throw new Error('File already exists; move it before retrying.'); }
+          try { await access(file); console.log(`Skipping existing ${filename}`); return; }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
           const cover = track.artwork_url ? await saveCover(track.artwork_url, `${filename}-cover`) : projectCover;
-          await download(await signedUrl(projectPage, audioUrl), file);
+          await downloadAsset(audioUrl, file);
           await tag(file, extension, {
             title: track.title ?? '', album: data.project.title,
             artist: track.artist_name || data.project.artist_name || '',

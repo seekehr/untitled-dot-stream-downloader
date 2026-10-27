@@ -1,51 +1,14 @@
 # untitled.stream downloader
 
-Minimal TypeScript CLI for original audio downloads without the web app's ZIP size limit. Requires Node.js 24+.
+Download entire projects from untitled.stream or selected tracks in parallel without the ZIP size limit. Keeps original audio quality, cover art, and metadata, uses your existing Chrome login, and saves songs by title to a configurable folder.
 
-```sh
-npm install
-```
+## Setup
 
-Copy `config.example.json` to `config.json`. Set `output` to e.g. `~/Music/{projectName}`. Project names are sanitized, `~` expands to your home directory, and relative paths use your current working directory. Downloads run in parallel: `concurrency` defaults to 6 and accepts 1–16. Actual speed depends on your connection and the server. Filenames use the song title without a track-number prefix, e.g. `Oh No.mp3`; duplicate titles get a suffix such as `Oh No (2).mp3`. Existing numbered downloads are left as they are.
+1. Install Node.js 24+ and Google Chrome 144+.
+2. Run `npm install`.
+3. Copy `config.example.json` to `config.json`. Set `output` (e.g. `~/Music/{projectName}`) and `concurrency` (default: 6, maximum: 16).
+4. In your regular Chrome, sign in to untitled.stream and enable `chrome://inspect/#remote-debugging`.
+5. Run `npm start` and approve Chrome's connection prompt.
+6. Enter the optional invite URL, then the project URL. If invited, accept it in Chrome and press Enter in the terminal.
 
-Use your existing, regular **Google Chrome 144+** with your usual signed-in profile. Open `chrome://inspect/#remote-debugging` in Chrome and enable remote debugging, then run the downloader and approve Chrome's connection prompt. It opens its own tab using your existing cookies and leaves Chrome and your other tabs open when finished. No automated browser is launched or installed.
-
-Chrome's [documented connection flow](https://developer.chrome.com/blog/chrome-devtools-mcp-debug-your-browser-session) allows access to an existing session through a user-approved debugging connection. Chrome may display an automation banner while connected. Sign in normally before connecting if needed.
-
-Regular Chrome is detected automatically. For a custom, already enabled debugging endpoint, set `"chromeEndpoint": "http://127.0.0.1:9222"` in `config.json`. The downloader does not copy cookies or alter Chrome's settings.
-
-```sh
-# First use or a private project:
-npm start -- --login
-
-# List tracks:
-npm start -- --list
-
-# Download selected tracks (1-based numbers or track IDs):
-npm start -- --track 1 --track 3
-
-# Download all tracks:
-npm start
-```
-
-Every run asks for two separate inputs, in this order:
-
-1. **Invite URL (optional):** press Enter to skip if no invite is needed.
-2. **Project URL:** e.g. `https://untitled.stream/library/project/PROJECT_SLUG`.
-
-If you provide an invite URL, the browser opens it first. Sign in and accept the invite, then press Enter in the terminal; the downloader opens the project URL automatically. Without an invite, use `--login` if you need to sign in on the project page. URLs are entered at the prompts, not passed as arguments.
-
-Cookies and sign-in stay in your existing Chrome profile.
-
-Uses the site's `/project?slug=...&tracks=true` and storage signed-URL endpoints with your browser session. In the [client inspected on October 27, 2026](https://untitled.stream/assets/use-downloader-Cq_eGAk2.js), project ZIPs are built locally with a 1 GiB limit; no server bulk-download endpoint was found in that flow. This tool streams original files in parallel. These undocumented APIs may change. Downloads must be enabled by the owner.
-
-Audio comes from `audio_url`, never the transcoded playback fallback. Bundled FFmpeg copies audio without re-encoding, preserves existing tags, and adds title, album, available artist, track number, and cover art for MP3, FLAC, M4A/MP4, and AIFF. Other formats retain original embedded metadata and use separate cover images. The full API metadata (including BPM, key, and notes when returned) is saved in `project.json`. Project and track-specific artwork are saved separately too. Generated default artwork without an artwork URL is represented by its metadata in that JSON.
-
-Existing audio files are never overwritten. Failed transfers remove partial files. Tagging failures retain the downloaded original; move that file before retrying. Failed tracks are reported while remaining tracks continue; any failure exits nonzero. Projects with identical names need separate output folders.
-
-```sh
-npm run check
-npm test
-```
-
-Tests verify path safety, storage URLs, exact-byte streaming, interrupted downloads, and embedded cover/tags with unchanged compressed audio. The supplied example currently displays “Link not available,” so its download could not be verified live.
+For selected tracks, run `npm start -- --track 1 --track 3`. Use `npm start -- --list` to see track numbers.
