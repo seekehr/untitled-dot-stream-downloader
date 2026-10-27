@@ -3,14 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "start": "node src/index.ts",
+    "start": "node init && node src/index.ts",
     "check": "tsc --noEmit",
     "test": "node --test src/download.test.ts"
   },
   "dependencies": {
+    "dotenv": "^8.2.0",
     "ffmpeg-static": "^5.2.0",
+    "node-fetch": "^3.3.2",
     "playwright": "^1.64.1"
   },
   "devDependencies": {

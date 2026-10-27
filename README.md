@@ -12,3 +12,5 @@ Download entire projects from untitled.stream or selected tracks in parallel wit
 6. Enter the optional invite URL, then the project URL. If invited, accept it in Chrome and press Enter in the terminal.
 
 For selected tracks, run `npm start -- --track 1 --track 3`. Use `npm start -- --list` to see track numbers.
+
+Already downloaded files are skipped. Rerun with the same project and output folder to retry missing tracks.
