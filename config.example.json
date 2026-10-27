@@ -1,0 +1,4 @@
+{
+  "output": "~/Music/{projectName}",
+  "concurrency": 6
+}

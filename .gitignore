@@ -1,0 +1,7 @@
+node_modules/
+.idea/
+.untitled-browser/
+config.json
+Music/
+*.part
+*.tagged.*
