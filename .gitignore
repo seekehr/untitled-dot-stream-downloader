@@ -5,3 +5,4 @@ config.json
 Music/
 *.part
 *.tagged.*
+config.bat
